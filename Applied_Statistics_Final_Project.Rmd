@@ -1,0 +1,859 @@
+---
+title: "Can We Predict Life Expectancy  Using Historical Time Series Data?"
+author: "Bhavishya Chowdary Katragadda"
+date: "2023-11-12"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+```
+
+
+### Introduction
+
+
+We will use the time series analysis then Random Forest Regression and Linear Regression to examine whether we can predict life expectancy given historical time series data. 
+
+
+### Loading Libraries
+
+
+```{r, message=FALSE}
+
+#install.packages("randomForest")
+
+# loading libraries
+library(tidyverse)
+library(forecast)
+library(caret)
+library(randomForest)
+library(gridExtra)
+```
+
+
+### Loading the Datasets
+
+We first need to load the data into R environment
+
+```{r}
+# loading life expectancy data
+life_ex <- read.csv("C:/Users/bhavi/OneDrive/Documents/Desktop/Projects/Applied Stats/Life Expectancy Dataset.csv")
+head(life_ex)
+# loading population data  
+pop_df <- read.csv("C:/Users/bhavi/OneDrive/Documents/Desktop/Projects/Applied Stats/Population Dataset.csv")
+head(pop_df)
+```
+
+
+### Preprocessing the Population Dataframe
+
+We can the pivot the Population data set because our initial data had years as columns, this will help us process the data to change the years into rows for easier analysis.
+
+```{r}
+# gather columns into key-value pairs
+pop_df_long <- gather(pop_df, key = "Year", value = "Population", -Country.Name, -Country.Code, -Region, -IncomeGroup, -Indicator.Name, -Indicator.Code)
+
+# convert 'Year' to numeric (if needed)
+pop_df_long$Year <- as.numeric(gsub("X", "", pop_df_long$Year))
+
+# drop unnecessary columns from the population data
+pop_df_long <- pop_df_long %>%
+  select(-Indicator.Name, -Indicator.Code)
+
+# showing the dataframe
+head(pop_df_long)
+```
+
+
+### Proprocessing the Life Expectancy dataframe
+
+
+We will do the same to the Life Expectancy dataframe
+
+```{r}
+# gathering columns into key-value pairs
+life_ex_df_long <- gather(life_ex, key = "Year", value = "Life_Expectancy", -Country.Name, -Country.Code, -Indicator.Name, -Indicator.Code)
+
+# converting 'Year' to numeric (if needed)
+life_ex_df_long$Year <- as.numeric(gsub("X", "", life_ex_df_long$Year))
+
+# removing unnecessary columns from the life expectancy data
+life_ex_df_long <- life_ex_df_long %>%
+  select(-Indicator.Name, -Indicator.Code)
+
+# showing the dataframe
+head(life_ex_df_long)
+```
+
+### Merging the two dataframes
+
+Then using the country name, Country code and Year, we can merge the two dataframes into single dataframe
+
+```{r}
+# merging the the datasets by 'Country.Name', 'Country.Code', and 'Year'
+merged_data <- merge(pop_df_long, life_ex_df_long, by = c('Country.Name', 'Country.Code', 'Year'))
+
+# show few instances
+head(merged_data)
+```
+
+### Checking and dropping the missing values
+
+Then we need to check the missing values. It is important to note that at times, R does not read empty strings as Nulls, so the best thing is to replace empty strings with Nulls, so that if we omit all the nulls, we can omit all instances where the data point is missing
+```{r}
+
+# convert empty strings to NA
+merged_data[merged_data == ""] <- NA
+
+# missing values per column
+missing_values <- colSums(is.na(merged_data))
+
+# showing output
+cat('Missing values Before dropping\n')
+missing_values
+
+# dropping the missing values
+merged_data <- na.omit(merged_data)
+missing_values <- colSums(is.na(merged_data))
+cat('\n\nChecking the missing values After dropping\n')
+missing_values
+
+# shape of the data after dropping nulls
+cat('\n\nChecking the shape After dropping nulls\n')
+dim(merged_data)
+```
+
+We still have 12828 observations and 7 variables
+
+
+### Sorting the Merged Dataframe
+
+
+```{r}
+
+# Sort the dataframe by 'Country.Name', 'Country.Code', and 'Year'
+merged_data <- merged_data[order(merged_data$Country.Name, merged_data$Country.Code, merged_data$Year), ]
+```
+
+
+
+### Exploratory Data Analysis (EDA)
+
+
+From This Section, we will select 3 countries, one with the largest population, another with the population closest to the median and the one with the least population. To ensure that all the 3 countries have complete data from 1960, we will first filter the countries that contains the data from all the years. 
+ 
+
+```{r}
+
+# getting countries that have data for all years from 1960 to 2021
+complete_years_countries <- merged_data %>%
+  group_by(Country.Name) %>%
+  filter(all(c(1960:2021) %in% Year))
+
+# getting the total population for each country
+country_population <- complete_years_countries %>%
+  group_by(Country.Name) %>%
+  summarise(Total_Population = sum(Population))
+
+# identifying the country with the largest population
+largest_population <- country_population %>% 
+  filter(Total_Population == max(Total_Population))
+
+# the country with the population closest to the median
+middle_population <- country_population %>%
+  arrange(abs(Total_Population - median(Total_Population))) %>%
+  slice(1)
+
+# the country with the least population
+least_population <- country_population %>% 
+  filter(Total_Population == min(Total_Population))
+
+# filter the merged_data to include only the selected countries
+selected_countries <- merged_data %>%
+  filter(Country.Name %in% c(largest_population$Country.Name, 
+                             middle_population$Country.Name, 
+                             least_population$Country.Name))
+```
+
+The countries includes, Tuvalu (with the least population), Finland (with closest to median population), and China (with the largest population)
+
+
+### Checking the summary statistics
+
+
+```{r}
+
+# Summary statistics for numeric variables
+summary(selected_countries[, c("Year", "Population", "Life_Expectancy")])
+
+```
+
+As we can see from the results above:
+
+* The earliest year is 1960.
+* 25% of the data falls below year 1975.
+* The middle year is 1991.
+* 75% of the data falls below year 2006.
+* The latest year is 2021.
+
+* The smallest population size is around 5,404.
+* 25% of the data falls below the population size of 10,060.
+* The middle population size is 5 million.
+* The largest population size is 1.412 billion.
+
+* The minimum life expectancy is 33.27  years.
+* The middle life expectancy is 68.09 years.
+* The average life expectancy is 67.37 years.
+* The maximum life expectancy is 81.98 years.
+
+
+### Population Trends Over Time
+
+
+We can then check the trends in the 3 countries we selected earlier. Doing it individually makes sense so that we can have one values for each year. We cannot do it for the combined data because each year will be having multiple values which will alter our observations
+
+
+#### China
+
+
+```{r}
+
+# filter the merged_data to include only the selected countries
+china_df <- merged_data %>%
+  filter(Country.Name %in% c(largest_population$Country.Name))
+
+# Create a new plot for China with its own scale
+china_plot <- plot(china_df$Year,
+                   china_df$Population / 1e6,  # Convert to 'M' (millions)
+                   type = "l", 
+                   col = "red", 
+                   lwd = 2,
+                   xlab = "Year", 
+                   ylab = "",
+                   main = "Population Trends Over Time - China")
+mtext("China Population (000, 000)", side = 2, line = 3, col = "red")
+axis(2, at = pretty(range(china_df$Population / 1e6), n = 5)) # Add y-axis with 'M' for millions
+
+```
+
+#### Finland
+
+
+```{r}
+
+finland_df <- merged_data %>%
+  filter(Country.Name %in% c(middle_population$Country.Name))
+
+# Plot Finland on the left y-axis
+plot(finland_df$Year,
+     finland_df$Population, 
+     type = "l",
+     col = "blue",
+     lwd = 2,
+     xlab = "Year",
+     ylab = "",
+     main ="Population Trends Over Time - Finland",
+     axes = TRUE
+)
+mtext("Finland Population Over Time", side = 2, line = 3, col = "blue")
+axis(2, at = pretty(range(finland_df$Population), n = 5)) # Customize y-axis labels
+
+```
+
+
+
+#### Tuvalu
+
+
+```{r}
+
+tuvalu_df <- merged_data %>%
+  filter(Country.Name %in% c(least_population$Country.Name))
+
+plot(tuvalu_df$Year,
+     tuvalu_df$Population, 
+     type = "l",
+     col = "green",
+     lwd = 2,
+     xlab = "Year",
+     ylab = "",
+     axes = TRUE,
+     main ="Population Trends Over Time - Tuvalu",
+)
+mtext("Tuvalu Population", side = 2, line = 3, col = "green")
+
+```
+
+
+As we can see, for the 3 countries, the population is increasing significantly over time.
+
+
+### Time Series Creation from the Different Datafarmes
+
+
+We will now create time series object from the different datasets like china, Finland and Tuvalu.
+
+
+```{r}
+
+#### Transforming the data into a time series
+
+# china population and life expectancy time series
+china_population_ts <- ts(china_df$Population, start = c(1960), end = c(2021), frequency = 1)
+china_life_expectancy_ts <- ts(china_df$Life_Expectancy, start = c(1960), end = c(2021), frequency = 1)
+
+# finland population and life expectancy time series
+finland_population_ts <- ts(finland_df$Population, start = c(1960), end = c(2021), frequency = 1)
+finland_life_expectancy_ts <- ts(finland_df$Life_Expectancy, start = c(1960), end = c(2021), frequency = 1)
+
+# tuvalu population and life expectancy time series
+tuvalu_population_ts <- ts(tuvalu_df$Population, start = c(1960), end = c(2021), frequency = 1)
+tuvalu_life_expectancy_ts <- ts(tuvalu_df$Life_Expectancy, start = c(1960), end = c(2021), frequency = 1)
+
+```
+
+  
+### Visualiziing Time Series Trends
+
+
+Visualize Time Series Data: Plot the time series data for both population and life expectancy to observe trends, seasonality, and any apparent patterns.
+
+
+### China
+
+
+```{r}
+
+# plotting time series
+par(mfrow=c(1,2))
+
+plot(china_population_ts,main ="China Population, 1960 to 2021",
+     col="red",
+     xlab="Year",
+     ylab="Population")
+
+plot(china_life_expectancy_ts,
+     main="China Life expectancy: 1960-2021",
+     col="red",
+     xlab="Year",
+     ylab="Life Expectancy")
+
+```
+
+### Finland
+
+```{r}
+
+# plotting time series
+par(mfrow=c(1,2))
+
+plot(finland_population_ts,main ="finland Population, 1960 to 2021",
+     col="red",
+     xlab="Year",
+     ylab="Population")
+
+plot(finland_life_expectancy_ts,
+     main="finland Life expectancy, 1960 to 2021",
+     col="red",
+     xlab="Year",
+     ylab="Life Expectancy")
+
+```
+
+
+### Tuvalu
+
+
+```{r}
+
+# plotting time series
+par(mfrow=c(1,2))
+
+plot(tuvalu_population_ts,main ="tuvalu Population, 1960 to 2021",
+     col="red",
+     xlab="Year",
+     ylab="Population")
+
+plot(tuvalu_life_expectancy_ts,
+     main="tuvalu Life expectancy From 1960 to 2021",
+     col="red",
+     xlab="Year",
+     ylab="Life Expectancy")
+
+```
+
+We can already observe strong increasing trend, with strong seasonality from all the 3 countries. But for the three, there is no evidence of any cyclic behaviour.
+
+
+### Visualizing Autocorrelation Function Plots
+
+
+#### China
+
+
+```{r}
+
+# ACF plots
+par(mfrow=c(1,2))
+acf(china_population_ts, main = "China Population ACF") # population ACF plot
+acf(china_life_expectancy_ts, main = "China Life Expectancy ACF") # life expectancy ACF plot
+
+```
+
+
+In China population, we can see that the ACF shows significant values up to 16 lags above the dotted line in a time series analysis, it suggests that there may be a strong autocorrelation in the data even after considering the initial seasonality.
+
+For Life Expectancy, it shows 14 lags are significant
+
+
+#### Finland
+
+
+```{r}
+
+# ACF plots
+par(mfrow=c(1,2))
+acf(finland_population_ts, main = "Finland Population ACF") # population ACF plot
+acf(finland_life_expectancy_ts, main = "Finland Life Expectancy ACF") # life expectancy ACF plot
+
+```
+
+It shows the same for the finland time seris
+
+
+#### Tuvalu
+
+
+```{r}
+
+# ACF plots
+par(mfrow=c(1,2))
+acf(tuvalu_population_ts, main = "Tuvalu Population ACF") # population ACF plot
+acf(tuvalu_life_expectancy_ts, main = "Tuvalu Life Expectancy ACF") # life expectancy ACF plot
+
+```
+
+For Tuvalu, it shows 15 lags above the blue line for population, and 12 for life expectancy.
+
+
+
+### Visualizing Partial Autocorrelation Function (PACF)
+
+
+#### China
+
+```{r}
+
+# PACF plots
+par(mfrow=c(1,2))
+pacf(china_population_ts, main = "China Population pacf") # population pacf plot
+pacf(china_life_expectancy_ts, main = "China Life Expectancy pacf") # life expectancy pacf plot
+
+```
+
+
+#### Finland
+
+
+```{r}
+
+# pacf plots
+par(mfrow=c(1,2))
+pacf(finland_population_ts, main = "Finland Population pacf") # population pacf plot
+pacf(finland_life_expectancy_ts, main = "Finland Life Expectancy pacf") # life expectancy pacf plot
+
+```
+
+#### Tuvalu
+
+
+```{r}
+
+# pacf plots
+par(mfrow=c(1,2))
+pacf(tuvalu_population_ts, main = "Tuvalu Population pacf") # population pacf plot
+pacf(tuvalu_life_expectancy_ts, main = "Tuvalu Life Expectancy pacf") # life expectancy pacf plot
+
+```
+
+For all the 3 countries, we can see that only the 1st lag is significant.
+
+
+### ARIMA Models
+
+
+#### China Arima Model and Forecast
+
+
+```{r}
+
+par(mfrow=c(1,2))
+
+# create ARIMA model for China Population
+china_pop_model <- auto.arima(china_population_ts)
+
+#Summary of ARIMA model for China Population
+summary(china_pop_model)
+
+china_pop_forecast <- forecast(china_pop_model, level=c(95), h=10) # h = 10, forecast for 10 years
+plot(china_pop_forecast, main='China Population Forecast') # plotting the forecast
+
+# create ARIMA model for China Life expectancy
+china_lexp_model<-auto.arima(china_life_expectancy_ts)
+
+#Summary of ARIMA model for China Life Expectancy
+summary(china_lexp_model)
+
+china_lexp_forecast <- forecast(china_lexp_model, level=c(95), h=10) # h = 10, forecast for 10 years
+plot(china_lexp_forecast, main='China Life expectancy Forecast') # plotting the forecast
+
+```
+
+We can see that China's population in the next 10 years is expected to drop, while Life expectancy rate is expected to rise. 
+
+
+
+#### finland Arima Model and Forecast
+
+
+```{r}
+
+par(mfrow=c(1,2))
+
+# create ARIMA model for Finland Population
+finland_pop_model<-auto.arima(finland_population_ts)
+
+#Summary of ARIMA model for Finland Population
+summary(finland_pop_model)
+
+finland_pop_forecast <- forecast(finland_pop_model, level=c(95), h=10) # h = 10, forecast for 10 years
+plot(finland_pop_forecast, main='finland Population Forecast') # plotting the forecast
+
+# create ARIMA model for finland Life expectancy
+finland_lexp_model<-auto.arima(finland_life_expectancy_ts)
+
+#Summary of ARIMA model for Finland Life expectancy
+summary(finland_lexp_model)
+
+finland_lexp_forecast <- forecast(finland_lexp_model, level=c(95), h=10) # h = 10, forecast for 10 years
+plot(finland_lexp_forecast, main='finland Life expectancy Forecast') # plotting the forecast
+
+```
+
+In Finland, both the population and life expectancy rate are expected rise in the next 10 years.
+
+
+#### tuvalu Arima Model and Forecast
+
+
+```{r}
+
+par(mfrow=c(1,2))
+
+# create ARIMA model for Tuvalu Population
+tuvalu_pop_model<-auto.arima(tuvalu_population_ts)
+
+#Summary of ARIMA model for Tuvalu Population
+summary(tuvalu_pop_model)
+
+tuvalu_pop_forecast <- forecast(tuvalu_pop_model, level=c(95), h=10) # h = 10, forecast for 10 years
+plot(tuvalu_pop_forecast, main='tuvalu Population Forecast') # plotting the forecast
+
+# create ARIMA model for tuvalu Life expectancy
+tuvalu_lexp_model<-auto.arima(tuvalu_life_expectancy_ts)
+
+#Summary of ARIMA model for Tuvalu Life expectancy
+summary(tuvalu_lexp_model)
+
+tuvalu_lexp_forecast <- forecast(tuvalu_lexp_model, level=c(95), h=10) # h = 10, forecast for 10 years
+plot(tuvalu_lexp_forecast, main='tuvalu Life expectancy Forecast') # plotting the forecast
+
+```
+
+Even for Tuvalu, both the population and life expectancy rates are expected to rise.
+
+
+
+## Random Forest and Linear Regression Model Development
+
+
+### Train-Test Split: Split the time series data into training and testing sets.
+
+
+```{r}
+
+# Divide the data into a training set and a testing set
+set.seed(123)  # for reproducibility
+trainIndex <- createDataPartition(selected_countries$Life_Expectancy, p = .8, list = FALSE)
+train <- selected_countries[trainIndex, ]
+test <- selected_countries[-trainIndex, ]
+
+```
+
+
+### Training Random Forest Model
+
+```{r}
+
+# Create random forest for regression 
+RF_model <- randomForest (Life_Expectancy~ Population + IncomeGroup + Region, 
+                          data = train, 
+                          mtry = 3, 
+                         importance = TRUE, 
+                         na.action = na.omit) 
+
+RF_model
+
+#Summary of RF Model
+summary(RF_model)
+
+```
+
+
+
+### Random Forest Evaluation
+
+```{r}
+
+# Making predictions on the test data
+RF_preds <- predict(RF_model, newdata = test)
+cat("Making predictions on test data: \n",RF_preds,"\n")
+ 
+# Calculate performance metrics
+RF_mse <- mean((RF_preds - test$Life_Expectancy)^2)
+RF_rmse <- sqrt(RF_mse)
+cat("Mean Square Error:",RF_mse,"\n")
+cat("Root Mean Square Error: ",RF_rmse, "\n")
+
+RF_mae <- mean(abs(RF_preds - test$Life_Expectancy))
+cat("Mean Absolute Error: ",RF_mae, "\n")
+RF_r2 <- cor(RF_preds, test$Life_Expectancy)^2
+cat("R^2 Value: ",RF_r2, "\n")
+RF_adjR2 <- 1 - ((1 - RF_r2) * (nrow(test) - 1) / (nrow(test) - ncol(train)))
+cat("Adj R^2 Value: ",RF_adjR2, "\n")
+```
+
+
+### Linear Regression Model (Base Model)
+```{r}
+# Linear Regression 
+LR_model <- lm(Life_Expectancy~ Population + IncomeGroup + Region, data = train)
+
+# model
+summary(LR_model)
+```
+### Linear Regression Model with log(Population)
+
+```{r}
+
+# Linear Regression 
+LR_model_1 <- lm(Life_Expectancy~ log(Population) + IncomeGroup + Region, data = train)
+
+# model
+summary(LR_model_1)
+
+```
+
+
+### Linear Regression Evaluation
+
+
+```{r}
+
+# Making predictions on the test data
+LR_preds <- predict(LR_model, newdata = test)
+ 
+# Calculate performance metrics
+LR_mse <- mean((LR_preds - test$Life_Expectancy)^2)
+LR_rmse <- sqrt(LR_mse)
+
+LR_mae <- mean(abs(LR_preds - test$Life_Expectancy))
+LR_r2 <- cor(LR_preds, test$Life_Expectancy)^2
+LR_adjR2 <- 1 - ((1 - LR_r2) * (nrow(test) - 1) / (nrow(test) - ncol(train)))
+
+```
+
+
+
+
+## Model Comparisons
+
+
+### Accuracy Metrics
+
+
+```{r}
+
+cat('Random Forest\n')
+print(paste("MSE:", RF_mse))
+print(paste("RMSE:", RF_rmse))
+print(paste("MAE:", RF_mae))
+print(paste("R Squared:", RF_r2))
+print(paste("Adj. R²:", RF_adjR2))
+
+
+cat('\n\nLinear Regression\n')
+print(paste("MSE:", LR_mse))
+print(paste("RMSE:", LR_rmse))
+print(paste("MAE:", LR_mae))
+print(paste("R Squared:", LR_r2))
+print(paste("Adj. R²:", LR_adjR2))
+
+```
+
+
+From the evaluation metrics above, we can see that Random Forest model outperforms the Linear Regression model in terms of all the evaluated metrics. The Random Forest model has a significantly lower MSE, RMSE, and MAE, indicating better accuracy and precision in predicting the target variable.
+The r squared value for the Random Forest model is also higher, indicating a better fit to the data compared to the Linear Regression model. In general, the Random Forest still demonstrates a better fit.
+
+
+
+### Predictions Vs Reference
+
+
+```{r}
+
+# Plot the original time series and the random forest forecast
+plot_rf <- ggplot(test) +
+  geom_line(aes(x = Year, y = Life_Expectancy, color = "Original")) +
+  geom_line(data = test, aes(x = Year, y = RF_preds, color = "Forecast")) +
+  scale_color_manual(values = c("Original" = "blue", "Forecast" = "red")) +
+  labs(title = "Random Forest Forecast", y = "Life Expectancy")
+
+# Plot the original time series and the linear regression forecast
+plot_lr <- ggplot(test) +
+  geom_line(aes(x = Year, y = Life_Expectancy, color = "Original")) +
+  geom_line(data = test, aes(x = Year, y = LR_preds, color = "Forecast")) +
+  scale_color_manual(values = c("Original" = "blue", "Forecast" = "red")) +
+  labs(title = "Linear Regression Forecast", y = "Life Expectancy")
+
+# Arrange the plots side by side using grid.arrange
+final_plot <- grid.arrange(plot_rf, plot_lr, ncol = 2)
+
+``` 
+
+
+From the forecast life expectancy rate, we can also see that the Random forest model perfprms better than the linear regression model. This can be observed from the blue lines indicating the actual value and the red line indicating the predicted.
+  
+  
+### Predictions Vs Actual
+
+
+```{r}
+
+par(mfrow=c(1,2))
+
+# Random Forest
+plot(test$Life_Expectancy, RF_preds, main = "Predicted vs Actual (RF)", xlab = "Actual", ylab = "Predicted")
+
+# Linear Regression
+plot(test$Life_Expectancy, LR_preds, main = "Predicted vs Actual (LR)", xlab = "Actual", ylab = "Predicted")
+
+```
+
+
+Even for this plots, we can see that the Random Forest model has a better fit than the Linear Regression model.
+
+
+
+```{r}
+
+par(mfrow=c(1,2))
+
+# RF QQ Plot 
+rf_residuals <- test$Life_Expectancy - RF_preds
+qqnorm(rf_residuals, main='Normal Q-Q Plot (RF)')
+qqline(rf_residuals, col = 2)
+
+# Linear Regression
+lm_residuals <- test$Life_Expectancy - LR_preds
+qqnorm(lm_residuals, main='Normal Q-Q Plot (LR)')
+qqline(lm_residuals, col = 2)
+
+```
+
+The normal Q-Q plot as well shows that the Random Forest model performs better and the points follows the line though there are some deviations, they are not as bad as the one for Linear Regression model.
+
+
+```{r}
+
+# Create Residuals vs. Fitted Plots
+par(mfrow = c(1, 2))  
+
+# Residuals vs. Fitted Plot for Random Forest
+plot(RF_preds, rf_residuals, main = "Residuals vs. Fitted (RF)",
+     xlab = "Fitted Values", ylab = "Residuals")
+abline(h = 0, col = "red", lty = 2) 
+
+
+# Residuals vs. Fitted Plot for Linear Regression
+plot(LR_preds, lm_residuals, main = "Residuals vs. Fitted (LR)",
+     xlab = "Fitted Values", ylab = "Residuals")
+abline(h = 0, col = "red", lty = 2)  
+
+# Reset the plotting layout
+par(mfrow = c(1, 1))
+
+```
+
+The Random Forest model shows it outperforms the Linear Regression model.
+
+
+Therefore, we can say that we choose the Random Forest method for us life expectancy prediction.
+
+
+### The Most Important Variable
+
+
+```{r}
+
+# Random Forest
+varImpPlot(RF_model)
+
+```
+
+
+
+```{r}
+
+#Conditional=True, adjusts for correlations between predictors.
+i_scores <- varImp(RF_model, conditional=TRUE)
+
+#Gathering rownames. 
+i_scores <- i_scores %>% tibble::rownames_to_column("var") 
+i_scores$var<- i_scores$var %>% as.factor()
+
+#Plotting the bar and polar charts for comparing variables
+i_bar <- ggplot(data = i_scores) + 
+  geom_bar(stat = "identity",
+           mapping = aes(x = var, y=Overall, fill = var), show.legend = FALSE, width = 1) + 
+  labs(x = NULL, y = NULL)
+i_bar + coord_polar() + theme_minimal()
+i_bar + coord_flip() + theme_minimal()
+
+```
+
+
+
+In this project, we wanted to see and investigate whether life expectancy can be predicted based on historical time series data. To do that, we developed three different modeling approaches:
+
+* Auto ARIMA, 
+* Random Forest Regression, 
+* Linear Regression. 
+
+For Auto Arima model, we use different datasets from different countries like China, Tuvalu and Finland. We selected the countries based on the population. The most populated country, the country whose population was nearest to the median population, and the least populated country. We developed auto Arima model for both population and Life expectancy. All the models showed predictive capabilities and showed us that indeed, we can use historical data to predict life expectancy and population.
+
+For Random Forest and Linear Regression, we trained our models with a combination of the three countries. The data included  population size, region, and income group as potential predictors. We compared the models performance based on the performance metrics and it revealed that Random forest Regression was the best performing model.
+
+Also, from the two models, indicate that life expectancy can indeed be predicted with a high level of accuracy, especially using the Random Forest model. 
+
+The findings from the feature importance of the Random Forest model is that the most important feature or predictor for the life expectancy rate is population, which according to the value importance plot, contributes to about 60% of the predictive power. That shows population has the most influence on the life expectancy rate of any country or region. The variable with the least contributing power is the income group with around 11%.
+
+
+Key Predictors: Population size emerged as the most critical predictor of life expectancy.
+
+
